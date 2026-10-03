@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="stylesheet" href="styles.css?v=9">
   <script>
     // Aplica o tema salvo antes da primeira pintura (evita "piscar" de tema).
     (function () {
@@ -30,6 +30,9 @@
     </div>
 
     <div class="top-actions">
+      <button type="button" id="share-btn" class="icon-btn lg" data-act="share" title="Compartilhar tarefas" aria-label="Compartilhar tarefas">
+        <svg viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/></svg>
+      </button>
       <button type="button" id="search-toggle" class="icon-btn lg" title="Pesquisar (Ctrl+K)" aria-label="Pesquisar" aria-pressed="false" aria-controls="search-bar">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
       </button>
@@ -54,6 +57,14 @@
           <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>
         </button>
         <div class="popover" id="data-pop" role="menu" hidden>
+          <div class="popover-title">Compartilhar</div>
+          <button type="button" role="menuitem" data-act="share">
+            <svg viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/></svg>Compartilhar tarefas
+          </button>
+          <button type="button" role="menuitem" id="open-code-btn">
+            <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Abrir link ou código
+          </button>
+          <div class="popover-sep"></div>
           <div class="popover-title">Seus dados</div>
           <button type="button" role="menuitem" id="export-btn">
             <svg viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 20h14"/></svg>Exportar backup
@@ -79,6 +90,16 @@
     <button type="button" class="icon-btn" id="search-close" aria-label="Fechar pesquisa">
       <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
     </button>
+  </div>
+
+  <!-- Aviso de visualização de tarefas compartilhadas (somente leitura) -->
+  <div class="shared-banner" id="shared-banner" hidden>
+    <svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
+    <span class="shared-text" id="shared-text">Visualizando tarefas compartilhadas</span>
+    <div class="shared-actions">
+      <button type="button" class="btn primary" id="shared-save">Salvar nas minhas</button>
+      <button type="button" class="btn ghost" id="shared-exit">Sair</button>
+    </div>
   </div>
 
   <main class="layout" data-view="list">
@@ -182,8 +203,73 @@
     </form>
   </dialog>
 
+  <!-- ============ Modal: compartilhar ============ -->
+  <dialog id="share-modal" class="modal" aria-labelledby="share-title">
+    <div class="modal-inner">
+      <div class="modal-head">
+        <h2 id="share-title">Compartilhar tarefas</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Fechar">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-text">Quem abrir verá suas tarefas com descrições, datas, urgências, conexões e o grafo. Os dados vão dentro do próprio link — nada é enviado a servidores, e a outra pessoa não altera as suas tarefas.</p>
+        <label class="gs-row share-opt">
+          <span>Incluir tarefas concluídas</span>
+          <span class="toggle"><input type="checkbox" id="share-done" checked><i></i></span>
+        </label>
+        <div class="field">
+          <span class="field-label">Link <small id="share-count"></small></span>
+          <div class="copy-row">
+            <input id="share-link" class="input mono" readonly aria-label="Link de compartilhamento">
+            <button type="button" class="btn primary" data-copy="share-link">Copiar</button>
+          </div>
+        </div>
+        <div class="field">
+          <span class="field-label">Código <small>para colar em “Abrir link ou código”</small></span>
+          <div class="copy-row">
+            <textarea id="share-code" class="input mono" rows="3" readonly aria-label="Código de compartilhamento"></textarea>
+            <button type="button" class="btn ghost" data-copy="share-code">Copiar</button>
+          </div>
+        </div>
+        <p class="share-warn" id="share-warn" hidden>O link ficou longo. Alguns apps de mensagem podem cortá-lo — se isso acontecer, envie o código.</p>
+      </div>
+      <div class="modal-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn ghost" data-close>Fechar</button>
+        <button type="button" class="btn primary" id="native-share" hidden>
+          <svg viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M5 13v6h14v-6"/></svg>Enviar…
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ============ Modal: abrir link ou código ============ -->
+  <dialog id="code-modal" class="modal" aria-labelledby="code-title">
+    <form class="modal-inner" id="code-form">
+      <div class="modal-head">
+        <h2 id="code-title">Abrir tarefas compartilhadas</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Fechar">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label">Cole o link ou o código recebido</span>
+          <textarea id="code-input" class="input mono" rows="4" required placeholder="https://…#c=…  ou  z…"></textarea>
+        </label>
+        <p class="share-warn" id="code-error" hidden></p>
+      </div>
+      <div class="modal-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary">Abrir</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

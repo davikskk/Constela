@@ -110,7 +110,10 @@
   }
 
   const ui = Object.assign({ filter: 'all', sort: 'urgency', view: 'list', gsOpen: false, gsSections: {} }, store.get(KEYS.ui, {}));
-  const persist = () => store.set(KEYS.tasks, tasks);
+  // Modo somente leitura: ativo ao abrir tarefas compartilhadas por outra pessoa.
+  let readOnly = false;
+  let ownTasks = null;
+  const persist = () => { if (!readOnly) store.set(KEYS.tasks, tasks); };
   const persistUI = () => store.set(KEYS.ui, ui);
   const byId = (id) => tasks.find((t) => t.id === id);
   const byTitle = (title) => tasks.find((t) => t.title.toLowerCase() === title.toLowerCase());
@@ -219,6 +222,7 @@
 
   function openModal(id = null, preset = {}) {
     closePopovers();
+    if (readOnly) return;
     const t = id ? byId(id) : null;
     editingId = t ? t.id : null;
     form.reset();
@@ -280,6 +284,7 @@
   fTitle.addEventListener('input', () => fTitle.setCustomValidity(''));
 
   function deleteTask(id) {
+    if (readOnly) return false;
     const t = byId(id);
     if (!t || !confirm(`Excluir a tarefa "${t.title}"?`)) return false;
     tasks = tasks.filter((x) => x.id !== id);
@@ -290,7 +295,10 @@
   }
 
   // Qualquer botão "Nova tarefa"
-  document.addEventListener('click', (e) => { if (e.target.closest('[data-act="new"]')) openModal(); });
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-act="new"]')) openModal();
+    else if (e.target.closest('[data-act="share"]')) openShare();
+  });
 
   /* ===================== Lista ===================== */
   const listEl = $('#task-list');
@@ -399,6 +407,7 @@
     if (!btn || !li) return;
     const t = byId(li.dataset.id);
     if (!t) return;
+    if (readOnly) return;
     if (btn.dataset.act === 'toggle') {
       t.done = !t.done;
       persist(); renderAll();
@@ -468,10 +477,217 @@
     }
   });
 
+  /* =====================================================================
+   * Compartilhar: as tarefas viram um código compacto (JSON enxuto,
+   * comprimido com deflate e em base64url) que vai no próprio link (#c=…).
+   * Funciona em hospedagem estática (GitHub Pages): nada vai para servidor,
+   * e o "#" nem é enviado ao GitHub.
+   * ===================================================================== */
+  const canZip = 'CompressionStream' in window && 'DecompressionStream' in window;
+  const pipe = async (bytes, stream) =>
+    new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+  function b64urlEncode(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64urlDecode(str) {
+    const s = atob(str.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((str.length + 3) % 4));
+    return Uint8Array.from(s, (c) => c.charCodeAt(0));
+  }
+
+  async function encodeShare(list) {
+    // Formato v1: [título, descrição, feita, urgência×100, AAAAMMDD, [índices dos links]]
+    const idx = new Map(list.map((t, i) => [t.id, i]));
+    const payload = {
+      v: 1,
+      t: list.map((t) => {
+        const row = [t.title, t.desc, t.done ? 1 : 0, Math.round(t.urgency * 100), t.date.replace(/-/g, '')];
+        const links = t.links.map((l) => idx.get(l)).filter((i) => i != null);
+        if (links.length) row.push(links);
+        return row;
+      })
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    return canZip
+      ? 'z' + b64urlEncode(await pipe(bytes, new CompressionStream('deflate-raw')))
+      : 'j' + b64urlEncode(bytes);
+  }
+
+  async function decodeShare(input) {
+    let code = String(input).trim();
+    const m = code.match(/[#&?]c=([A-Za-z0-9_-]+)/);
+    if (m) code = m[1];
+    code = code.replace(/\s+/g, '');
+    if (!/^[zj][A-Za-z0-9_-]{4,}$/.test(code)) throw new Error('Isso não parece um link ou código do Constela.');
+    let bytes;
+    try {
+      bytes = b64urlDecode(code.slice(1));
+      if (code[0] === 'z') {
+        if (!canZip) throw new Error('old');
+        bytes = await pipe(bytes, new DecompressionStream('deflate-raw'));
+      }
+    } catch (err) {
+      throw new Error(err.message === 'old'
+        ? 'Seu navegador é antigo demais para abrir este código. Atualize-o.'
+        : 'O código está incompleto ou corrompido. Copie-o novamente.');
+    }
+    let data;
+    try { data = JSON.parse(new TextDecoder().decode(bytes)); } catch { data = null; }
+    if (!data || data.v !== 1 || !Array.isArray(data.t)) throw new Error('O código está incompleto ou corrompido.');
+    const ids = data.t.map(() => uid());
+    const now = Date.now();
+    const list = data.t.map((r, i) => Array.isArray(r) && normalizeTask({
+      id: ids[i], title: r[0], desc: r[1], done: r[2] === 1,
+      urgency: (Number(r[3]) || 0) / 100,
+      date: /^\d{8}$/.test(r[4] || '') ? `${r[4].slice(0, 4)}-${r[4].slice(4, 6)}-${r[4].slice(6)}` : '',
+      created: now - i,
+      links: Array.isArray(r[5]) ? r[5].map((j) => ids[j]).filter(Boolean) : []
+    })).filter(Boolean);
+    if (!list.length) throw new Error('Nenhuma tarefa encontrada nesse código.');
+    return list;
+  }
+
+  const shareModal = $('#share-modal');
+  const codeModal = $('#code-modal');
+  [shareModal, codeModal].forEach((d) => d.addEventListener('click', (e) => {
+    if (e.target === d || e.target.closest('[data-close]')) d.close();
+  }));
+
+  let shareInfo = null;
+  async function refreshShare() {
+    const list = $('#share-done').checked ? tasks : tasks.filter((t) => !t.done);
+    const warn = $('#share-warn');
+    if (!list.length) {
+      shareInfo = null;
+      $('#share-link').value = $('#share-code').value = '';
+      $('#share-count').textContent = '0 tarefas';
+      warn.textContent = 'Nenhuma tarefa para compartilhar com esse filtro.';
+      warn.hidden = false;
+      return;
+    }
+    const code = await encodeShare(list);
+    const link = location.href.split('#')[0] + '#c=' + code;
+    shareInfo = { link, n: list.length };
+    $('#share-link').value = link;
+    $('#share-code').value = code;
+    $('#share-count').textContent = `${list.length} tarefa${list.length === 1 ? '' : 's'} · ${link.length.toLocaleString('pt-BR')} caracteres`;
+    warn.textContent = 'O link ficou longo. Alguns apps de mensagem podem cortá-lo — se isso acontecer, envie o código.';
+    warn.hidden = link.length < 4000;
+  }
+
+  async function openShare() {
+    closePopovers();
+    if (readOnly) return;
+    if (!tasks.length) { toast('Crie tarefas antes de compartilhar'); return; }
+    await refreshShare();
+    $('#native-share').hidden = !navigator.share;
+    shareModal.showModal();
+    $('#share-link').select();
+  }
+  $('#share-done').addEventListener('change', refreshShare);
+
+  shareModal.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-copy]');
+    if (!b) return;
+    const el = $('#' + b.dataset.copy);
+    if (!el.value) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(el.value); ok = true; }
+    catch { el.select(); ok = document.execCommand('copy'); }
+    b.dataset.label = b.dataset.label || b.textContent;
+    b.textContent = ok ? 'Copiado ✓' : 'Selecione e copie';
+    b.classList.toggle('copied', ok);
+    clearTimeout(b._t);
+    b._t = setTimeout(() => { b.textContent = b.dataset.label; b.classList.remove('copied'); }, 1600);
+  });
+  $('#native-share').addEventListener('click', async () => {
+    if (!shareInfo) return;
+    try {
+      await navigator.share({ title: 'Constela', text: `${shareInfo.n} tarefa(s) compartilhada(s) pelo Constela`, url: shareInfo.link });
+    } catch { /* cancelado pelo usuário */ }
+  });
+
+  // Abrir link ou código colado
+  $('#open-code-btn').addEventListener('click', () => {
+    closePopovers();
+    $('#code-input').value = '';
+    $('#code-error').hidden = true;
+    codeModal.showModal();
+  });
+  $('#code-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const list = await decodeShare($('#code-input').value);
+      codeModal.close();
+      enterShared(list);
+    } catch (err) {
+      $('#code-error').textContent = err.message;
+      $('#code-error').hidden = false;
+    }
+  });
+
+  // Modo de visualização: mostra as tarefas recebidas sem tocar nas suas.
+  function enterShared(list) {
+    if (!readOnly) ownTasks = tasks;
+    readOnly = true;
+    tasks = list;
+    closeModal();
+    document.body.classList.add('readonly');
+    $('#shared-text').innerHTML = `Visualizando <strong>${list.length} tarefa${list.length === 1 ? '' : 's'} compartilhada${list.length === 1 ? '' : 's'}</strong> — somente leitura`;
+    $('#shared-banner').hidden = false;
+    renderAll();
+    graph.warmup();
+  }
+  function exitShared(nextTasks) {
+    if (!readOnly) return;
+    tasks = nextTasks || ownTasks;
+    ownTasks = null;
+    readOnly = false;
+    document.body.classList.remove('readonly');
+    $('#shared-banner').hidden = true;
+    if (/[#&]c=/.test(location.hash)) history.replaceState(null, '', location.href.split('#')[0]);
+    persist();
+    renderAll();
+    graph.warmup();
+  }
+  $('#shared-exit').addEventListener('click', () => exitShared());
+  $('#shared-save').addEventListener('click', () => {
+    const key = (t) => t.title.toLowerCase() + '|' + t.desc;
+    const ownByKey = new Map(ownTasks.map((t) => [key(t), t.id]));
+    // Tarefas idênticas às suas não são duplicadas; links para elas são reaproveitados.
+    const remap = new Map();
+    tasks.forEach((t) => { if (ownByKey.has(key(t))) remap.set(t.id, ownByKey.get(key(t))); });
+    const fresh = tasks.filter((t) => !remap.has(t.id));
+    const titles = new Set(ownTasks.map((t) => t.title.toLowerCase()));
+    fresh.forEach((t) => {
+      t.links = t.links.map((l) => remap.get(l) || l);
+      if (titles.has(t.title.toLowerCase())) { // título repetido: ganha sufixo
+        let n = 2;
+        while (titles.has(`${t.title} (${n})`.toLowerCase())) n++;
+        t.title = `${t.title} (${n})`;
+      }
+      titles.add(t.title.toLowerCase());
+    });
+    exitShared(ownTasks.concat(fresh));
+    toast(fresh.length ? `${fresh.length} tarefa${fresh.length === 1 ? '' : 's'} adicionada${fresh.length === 1 ? '' : 's'} às suas` : 'Você já tinha todas essas tarefas');
+  });
+
+  async function openFromHash() {
+    const m = location.hash.match(/[#&]c=([A-Za-z0-9_-]+)/);
+    if (!m) return;
+    try { enterShared(await decodeShare(m[1])); }
+    catch (err) {
+      toast('Link de compartilhamento inválido');
+      history.replaceState(null, '', location.href.split('#')[0]);
+    }
+  }
+  window.addEventListener('hashchange', openFromHash);
+
   /* ===================== Atalhos de teclado ===================== */
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen(searchBar.hidden || document.activeElement !== searchInput); return; }
-    if (modal.open || isTyping(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (document.querySelector('dialog[open]') || isTyping(document.activeElement) || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'n' || e.key === 'N') { e.preventDefault(); openModal(); }
     else if (e.key === '/') { e.preventDefault(); setSearchOpen(true); }
     else if (e.key === 'Escape') closePopovers();
@@ -1093,4 +1309,5 @@
   setView(ui.view);
   renderAll();
   graph.warmup();
+  openFromHash();
 })();

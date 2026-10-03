@@ -488,6 +488,43 @@ select.input option { background: var(--panel-solid); color: var(--text); }
 .chip button { flex: none; border: 0; background: transparent; color: inherit; cursor: pointer; width: 20px; height: 20px; border-radius: 50%; line-height: 1; }
 .chip button:hover { background: var(--accent); color: var(--accent-contrast); }
 
+/* ================= Compartilhar ================= */
+.modal-inner { display: flex; flex-direction: column; width: 100%; min-height: 0; margin: 0; }
+.modal-text { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.share-opt { padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+.copy-row { display: flex; gap: 8px; align-items: stretch; }
+.copy-row .input { flex: 1; min-width: 0; }
+.copy-row .btn { flex: none; }
+.mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+textarea.mono { min-height: 64px; resize: none; word-break: break-all; }
+.share-warn { margin: 0; padding: 9px 12px; border-radius: 9px; font-size: 12.5px; line-height: 1.45; background: rgba(229, 72, 77, .1); color: var(--danger); }
+.btn.copied { background: #2f9e6b; border-color: #2f9e6b; color: #fff; }
+.popover-sep { height: 1px; margin: 6px 4px; background: var(--border); }
+
+.shared-banner {
+  flex: none;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 max(var(--gutter), env(safe-area-inset-right)) 12px max(var(--gutter), env(safe-area-inset-left));
+  padding: 8px 8px 8px 14px;
+  background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 12px;
+  backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+  animation: slide-down .16s ease-out;
+}
+.shared-banner > svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
+.shared-text { flex: 1; min-width: 160px; font-size: 13px; }
+.shared-text strong { color: var(--accent); }
+.shared-actions { display: flex; gap: 6px; }
+.shared-actions .btn { min-height: 32px; padding: 6px 12px; font-size: 12.5px; }
+
+/* Modo somente leitura (visualizando tarefas de outra pessoa) */
+body.readonly .task-actions,
+body.readonly .new-task-btn,
+body.readonly #share-btn,
+body.readonly [data-popover="data-pop"],
+body.readonly .empty-list .btn { display: none; }
+body.readonly .check { pointer-events: none; }
+body.readonly .task-body { cursor: default; }
+
 /* ================= Toast ================= */
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 50;
@@ -552,6 +589,9 @@ select.input option { background: var(--panel-solid); color: var(--text); }
   .modal-head { padding: 14px 12px 6px 16px; }
   .modal-body { padding: 6px 16px 14px; }
   .form-row { grid-template-columns: 1fr; gap: 14px; }
+  .copy-row { flex-direction: column; }
+  .shared-actions { width: 100%; }
+  .shared-actions .btn { flex: 1; }
   .input { font-size: 16px; } /* evita zoom automático no iOS */
   .search-bar input { font-size: 16px; }
   .segmented button { padding: 6px 9px; }
