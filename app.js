@@ -5,7 +5,7 @@
    * Persistência: localStorage (principal) com cookies como alternativa.
    * O tema também é gravado em cookie.
    * ===================================================================== */
-  const KEYS = { tasks: 'rotina.tarefas', graph: 'rotina.grafo', theme: 'rotina.tema', ui: 'rotina.ui', v2: 'rotina.v2' };
+  const KEYS = { tasks: 'rotina.tarefas', folders: 'rotina.pastas', graph: 'rotina.grafo', theme: 'rotina.tema', ui: 'rotina.ui', v2: 'rotina.v2' };
 
   const hasLS = (() => {
     try { localStorage.setItem('__rotina', '1'); localStorage.removeItem('__rotina'); return true; }
@@ -109,11 +109,46 @@
     store.set(KEYS.v2, true);
   }
 
-  const ui = Object.assign({ filter: 'all', sort: 'urgency', view: 'list', gsOpen: false, gsSections: {} }, store.get(KEYS.ui, {}));
+  const ui = Object.assign({ filter: 'all', sort: 'urgency', view: 'list', gsOpen: false, gsSections: {}, folder: null }, store.get(KEYS.ui, {}));
+
+  /* ===================== Pastas ===================== */
+  // Cada pasta é um gerenciador independente: tarefas, conexões e grafo próprios.
+  const FOLDER_COLORS = ['#a882ff', '#4f9cff', '#2fbf8f', '#f5a524', '#ff6b8a', '#e05cff', '#3cc8de', '#9aa0a6'];
+  function normalizeFolder(f) {
+    if (!f || typeof f !== 'object') return null;
+    return {
+      id: String(f.id || uid()),
+      name: String(f.name || '').trim().slice(0, 40) || 'Pasta',
+      color: /^#[0-9a-f]{6}$/i.test(f.color || '') ? f.color : FOLDER_COLORS[0],
+      created: Number(f.created) || Date.now(),
+      tasks: (Array.isArray(f.tasks) ? f.tasks : []).map(normalizeTask).filter(Boolean)
+    };
+  }
+  const makeFolder = (name, color, list = []) => normalizeFolder({ id: uid(), name, color, created: Date.now(), tasks: list });
+
+  let folders = (store.get(KEYS.folders, null) || []).map(normalizeFolder).filter(Boolean);
+  if (!folders.length) {
+    // Primeira vez com pastas: as tarefas já existentes vão para uma pasta padrão.
+    folders = [makeFolder('Minhas tarefas', FOLDER_COLORS[0], tasks)];
+    store.set(KEYS.folders, folders);
+  }
+  if (!folders.some((f) => f.id === ui.folder)) ui.folder = folders[0].id;
+  const currentFolder = () => folders.find((f) => f.id === ui.folder) || folders[0];
+  tasks = currentFolder().tasks;
+  const uniqueFolderName = (name) => {
+    let out = name, n = 2;
+    while (folders.some((f) => f.name.toLowerCase() === out.toLowerCase())) out = `${name} (${n++})`;
+    return out;
+  };
+
   // Modo somente leitura: ativo ao abrir tarefas compartilhadas por outra pessoa.
   let readOnly = false;
   let ownTasks = null;
-  const persist = () => { if (!readOnly) store.set(KEYS.tasks, tasks); };
+  const persist = () => {
+    if (readOnly) return;
+    currentFolder().tasks = tasks;
+    store.set(KEYS.folders, folders);
+  };
   const persistUI = () => store.set(KEYS.ui, ui);
   const byId = (id) => tasks.find((t) => t.id === id);
   const byTitle = (title) => tasks.find((t) => t.title.toLowerCase() === title.toLowerCase());
@@ -235,6 +270,11 @@
     $('#form-title').textContent = t ? 'Editar tarefa' : 'Nova tarefa';
     $('#submit-btn').textContent = t ? 'Salvar' : 'Adicionar';
     $('#delete-in-modal').hidden = !t;
+    // Seletor de pasta (só aparece quando existe mais de uma)
+    const fFolder = $('#f-folder');
+    fFolder.innerHTML = folders.map((f) => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join('');
+    fFolder.value = currentFolder().id;
+    $('#folder-field').hidden = folders.length < 2;
     updateUrgOut();
     renderLinkPicker();
     if (!modal.open) modal.showModal();
@@ -251,13 +291,29 @@
     e.preventDefault();
     const title = fTitle.value.trim();
     if (!title) { fTitle.focus(); return; }
-    const dup = byTitle(title);
+    const target = folders.find((f) => f.id === $('#f-folder').value) || currentFolder();
+    const moving = target !== currentFolder();
+    const dup = (moving ? target.tasks : tasks).find((t) => t.title.toLowerCase() === title.toLowerCase());
     if (dup && dup.id !== editingId) {
-      fTitle.setCustomValidity('Já existe uma tarefa com esse título.');
+      fTitle.setCustomValidity(`Já existe uma tarefa com esse título${moving ? ` em “${target.name}”` : ''}.`);
       fTitle.reportValidity();
       return;
     }
-    const data = { title, desc: fDesc.value.trim(), date: fDate.value, urgency: Number(fUrg.value), links: [...formLinks] };
+    // Conexões só valem dentro da mesma pasta.
+    const data = { title, desc: fDesc.value.trim(), date: fDate.value, urgency: Number(fUrg.value), links: moving ? [] : [...formLinks] };
+    if (moving) {
+      const wasEditing = !!editingId;
+      const t = wasEditing ? byId(editingId) : normalizeTask({ id: uid(), done: false, created: Date.now(), title });
+      Object.assign(t, data);
+      tasks = tasks.filter((x) => x.id !== t.id);
+      tasks.forEach((x) => { x.links = x.links.filter((l) => l !== t.id); });
+      target.tasks.push(t);
+      persist(); // salva a pasta atual e a de destino (ambas estão em "folders")
+      closeModal();
+      renderAll();
+      toast(`${wasEditing ? 'Tarefa movida' : 'Tarefa criada'} em “${target.name}”`);
+      return;
+    }
     let id;
     if (editingId) {
       const t = byId(editingId);
@@ -298,6 +354,113 @@
   document.addEventListener('click', (e) => {
     if (e.target.closest('[data-act="new"]')) openModal();
     else if (e.target.closest('[data-act="share"]')) openShare();
+  });
+
+  /* ===================== Pastas: interface ===================== */
+  const folderModal = $('#folder-modal');
+  let editingFolderId = null;
+  const folderIcon = (c) => `<svg class="folder-ico" viewBox="0 0 24 24" style="color:${c}"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z" fill="currentColor" fill-opacity=".28"/></svg>`;
+  const folderTasks = (f) => (f === currentFolder() && !readOnly ? tasks : f.tasks);
+
+  function renderFolderUI() {
+    const cur = currentFolder();
+    $('#folder-current').innerHTML = `${folderIcon(cur.color)}<span class="folder-name">${esc(cur.name)}</span>`;
+    if (!readOnly) $('#graph-folder').innerHTML = `<i style="background:${cur.color}"></i>${esc(cur.name)}`;
+    $('#folder-list').innerHTML = folders.map((f) => {
+      const list = folderTasks(f);
+      const pending = list.filter((t) => !t.done).length;
+      const info = pending ? `${pending} pendente${pending === 1 ? '' : 's'}` : list.length ? 'tudo feito' : 'vazia';
+      return `<div class="folder-item${f === cur ? ' active' : ''}">
+          <button type="button" class="folder-pick" data-folder="${esc(f.id)}">${folderIcon(f.color)}<span>${esc(f.name)}</span><small>${info}</small></button>
+          <button type="button" class="icon-btn" data-folder-edit="${esc(f.id)}" title="Editar pasta" aria-label="Editar pasta ${esc(f.name)}">${ICON.edit}</button>
+        </div>`;
+    }).join('');
+  }
+
+  function switchFolder(id) {
+    const f = folders.find((x) => x.id === id);
+    closePopovers();
+    if (!f || f === currentFolder()) return;
+    currentFolder().tasks = tasks;
+    ui.folder = f.id;
+    persistUI();
+    tasks = f.tasks;
+    renderAll();
+    graph.warmup();
+  }
+
+  $('#folder-list').addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-folder-edit]');
+    if (edit) { openFolderModal(edit.dataset.folderEdit); return; }
+    const pick = e.target.closest('[data-folder]');
+    if (pick) switchFolder(pick.dataset.folder);
+  });
+  $('#new-folder-btn').addEventListener('click', () => openFolderModal());
+
+  function openFolderModal(id = null) {
+    closePopovers();
+    const f = id ? folders.find((x) => x.id === id) : null;
+    editingFolderId = f ? f.id : null;
+    const name = $('#fo-name');
+    name.value = f ? f.name : '';
+    name.setCustomValidity('');
+    const color = f ? f.color : FOLDER_COLORS[folders.length % FOLDER_COLORS.length];
+    $('#fo-colors').innerHTML = FOLDER_COLORS.map((c) =>
+      `<label class="color-dot" style="--c:${c}"><input type="radio" name="fo-color" value="${c}" ${c === color ? 'checked' : ''} aria-label="Cor ${c}"><i></i></label>`).join('');
+    $('#folder-title').textContent = f ? 'Editar pasta' : 'Nova pasta';
+    $('#fo-submit').textContent = f ? 'Salvar' : 'Criar pasta';
+    $('#fo-delete').hidden = !f || folders.length < 2;
+    $('#fo-suggest').hidden = !!f;
+    folderModal.showModal();
+    requestAnimationFrame(() => name.focus());
+  }
+  folderModal.addEventListener('click', (e) => {
+    if (e.target === folderModal || e.target.closest('[data-close]')) { folderModal.close(); return; }
+    const s = e.target.closest('[data-suggest]');
+    if (s) { $('#fo-name').value = s.dataset.suggest; $('#fo-name').setCustomValidity(''); $('#fo-name').focus(); }
+  });
+  $('#fo-name').addEventListener('input', (e) => e.target.setCustomValidity(''));
+
+  $('#folder-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = $('#fo-name');
+    const name = input.value.trim().slice(0, 40);
+    if (!name) return;
+    if (folders.some((f) => f.name.toLowerCase() === name.toLowerCase() && f.id !== editingFolderId)) {
+      input.setCustomValidity('Já existe uma pasta com esse nome.');
+      input.reportValidity();
+      return;
+    }
+    const color = ($('input[name="fo-color"]:checked') || {}).value || FOLDER_COLORS[0];
+    folderModal.close();
+    if (editingFolderId) {
+      Object.assign(folders.find((f) => f.id === editingFolderId), { name, color });
+      persist();
+      renderFolderUI();
+      toast('Pasta atualizada');
+    } else {
+      const nf = makeFolder(name, color);
+      folders.push(nf);
+      persist();
+      switchFolder(nf.id);
+      toast(`Pasta “${name}” criada`);
+    }
+  });
+
+  $('#fo-delete').addEventListener('click', () => {
+    const f = folders.find((x) => x.id === editingFolderId);
+    if (!f || folders.length < 2) return;
+    const n = folderTasks(f).length;
+    if (!confirm(`Excluir a pasta “${f.name}”${n ? ` e suas ${n} tarefa${n === 1 ? '' : 's'}` : ''}? Isso não pode ser desfeito.`)) return;
+    const wasCurrent = f === currentFolder();
+    if (!wasCurrent) currentFolder().tasks = tasks;
+    folders = folders.filter((x) => x !== f);
+    if (wasCurrent) { ui.folder = folders[0].id; tasks = folders[0].tasks; persistUI(); }
+    store.set(KEYS.folders, folders);
+    folderModal.close();
+    renderAll();
+    graph.warmup();
+    toast('Pasta excluída');
   });
 
   /* ===================== Lista ===================== */
@@ -451,10 +614,11 @@
   /* ===================== Exportar / Importar ===================== */
   $('#export-btn').addEventListener('click', () => {
     closePopovers();
-    const blob = new Blob([JSON.stringify({ app: 'rotina', version: 2, exported: new Date().toISOString(), tasks }, null, 2)], { type: 'application/json' });
+    persist(); // garante que a pasta aberta está sincronizada
+    const blob = new Blob([JSON.stringify({ app: 'constela', version: 3, exported: new Date().toISOString(), folders }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `rotina-backup-${todayISO()}.json`;
+    a.download = `constela-backup-${todayISO()}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     toast('Backup exportado');
@@ -466,11 +630,27 @@
     if (!file) return;
     try {
       const json = JSON.parse(await file.text());
+      if (json && Array.isArray(json.folders)) {
+        // Backup completo (todas as pastas)
+        const list = json.folders.map(normalizeFolder).filter(Boolean);
+        if (!list.length) throw new Error('vazio');
+        const total = list.reduce((s, f) => s + f.tasks.length, 0);
+        if (!confirm(`Importar ${list.length} pasta(s) com ${total} tarefa(s)? Todas as pastas atuais serão substituídas.`)) return;
+        folders = list;
+        ui.folder = folders[0].id;
+        persistUI();
+        tasks = folders[0].tasks;
+        store.set(KEYS.folders, folders);
+        renderAll(); graph.warmup();
+        toast(`${list.length} pasta(s) importada(s)`);
+        return;
+      }
+      // Backup antigo (lista única): entra na pasta aberta
       const list = (Array.isArray(json) ? json : json.tasks || []).map(normalizeTask).filter(Boolean);
       if (!list.length) throw new Error('vazio');
-      if (tasks.length && !confirm(`Importar ${list.length} tarefa(s)? As tarefas atuais serão substituídas.`)) return;
+      if (tasks.length && !confirm(`Importar ${list.length} tarefa(s) para “${currentFolder().name}”? As tarefas atuais dessa pasta serão substituídas.`)) return;
       tasks = list;
-      persist(); renderAll(); graph.fit();
+      persist(); renderAll(); graph.warmup();
       toast(`${list.length} tarefa(s) importada(s)`);
     } catch {
       alert('Arquivo inválido. Use um backup exportado por este site.');
@@ -496,11 +676,12 @@
     return Uint8Array.from(s, (c) => c.charCodeAt(0));
   }
 
-  async function encodeShare(list) {
-    // Formato v1: [título, descrição, feita, urgência×100, AAAAMMDD, [índices dos links]]
+  async function encodeShare(list, name) {
+    // Formato v1: n = nome da pasta; t = [título, descrição, feita, urgência×100, AAAAMMDD, [índices dos links]]
     const idx = new Map(list.map((t, i) => [t.id, i]));
     const payload = {
       v: 1,
+      n: name,
       t: list.map((t) => {
         const row = [t.title, t.desc, t.done ? 1 : 0, Math.round(t.urgency * 100), t.date.replace(/-/g, '')];
         const links = t.links.map((l) => idx.get(l)).filter((i) => i != null);
@@ -545,7 +726,7 @@
       links: Array.isArray(r[5]) ? r[5].map((j) => ids[j]).filter(Boolean) : []
     })).filter(Boolean);
     if (!list.length) throw new Error('Nenhuma tarefa encontrada nesse código.');
-    return list;
+    return { list, name: String(data.n || '').trim().slice(0, 40) || 'Compartilhadas' };
   }
 
   const shareModal = $('#share-modal');
@@ -566,7 +747,7 @@
       warn.hidden = false;
       return;
     }
-    const code = await encodeShare(list);
+    const code = await encodeShare(list, currentFolder().name);
     const link = location.href.split('#')[0] + '#c=' + code;
     shareInfo = { link, n: list.length };
     $('#share-link').value = link;
@@ -580,6 +761,7 @@
     closePopovers();
     if (readOnly) return;
     if (!tasks.length) { toast('Crie tarefas antes de compartilhar'); return; }
+    $('#share-title').textContent = `Compartilhar “${currentFolder().name}”`;
     await refreshShare();
     $('#native-share').hidden = !navigator.share;
     shareModal.showModal();
@@ -618,9 +800,9 @@
   $('#code-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
-      const list = await decodeShare($('#code-input').value);
+      const shared = await decodeShare($('#code-input').value);
       codeModal.close();
-      enterShared(list);
+      enterShared(shared);
     } catch (err) {
       $('#code-error').textContent = err.message;
       $('#code-error').hidden = false;
@@ -628,13 +810,16 @@
   });
 
   // Modo de visualização: mostra as tarefas recebidas sem tocar nas suas.
-  function enterShared(list) {
+  let sharedName = '';
+  function enterShared({ list, name }) {
     if (!readOnly) ownTasks = tasks;
     readOnly = true;
     tasks = list;
+    sharedName = name;
     closeModal();
     document.body.classList.add('readonly');
-    $('#shared-text').innerHTML = `Visualizando <strong>${list.length} tarefa${list.length === 1 ? '' : 's'} compartilhada${list.length === 1 ? '' : 's'}</strong> — somente leitura`;
+    $('#shared-text').innerHTML = `Visualizando a pasta <strong>“${esc(name)}”</strong> · ${list.length} tarefa${list.length === 1 ? '' : 's'} — somente leitura`;
+    $('#graph-folder').innerHTML = `<i style="background:var(--accent)"></i>${esc(name)}`;
     $('#shared-banner').hidden = false;
     renderAll();
     graph.warmup();
@@ -653,13 +838,24 @@
   }
   $('#shared-exit').addEventListener('click', () => exitShared());
   $('#shared-save').addEventListener('click', () => {
+    const incoming = tasks;
+    const name = sharedName;
+    exitShared();
+    // Salva numa pasta com o mesmo nome (mesclando) ou cria uma nova.
+    let target = folders.find((f) => f.name.toLowerCase() === name.toLowerCase());
+    const created = !target;
+    if (!target) {
+      target = makeFolder(name, FOLDER_COLORS[folders.length % FOLDER_COLORS.length]);
+      folders.push(target);
+    }
+    const own = folderTasks(target);
     const key = (t) => t.title.toLowerCase() + '|' + t.desc;
-    const ownByKey = new Map(ownTasks.map((t) => [key(t), t.id]));
-    // Tarefas idênticas às suas não são duplicadas; links para elas são reaproveitados.
+    const ownByKey = new Map(own.map((t) => [key(t), t.id]));
+    // Tarefas idênticas às que já existem não são duplicadas; links para elas são reaproveitados.
     const remap = new Map();
-    tasks.forEach((t) => { if (ownByKey.has(key(t))) remap.set(t.id, ownByKey.get(key(t))); });
-    const fresh = tasks.filter((t) => !remap.has(t.id));
-    const titles = new Set(ownTasks.map((t) => t.title.toLowerCase()));
+    incoming.forEach((t) => { if (ownByKey.has(key(t))) remap.set(t.id, ownByKey.get(key(t))); });
+    const fresh = incoming.filter((t) => !remap.has(t.id));
+    const titles = new Set(own.map((t) => t.title.toLowerCase()));
     fresh.forEach((t) => {
       t.links = t.links.map((l) => remap.get(l) || l);
       if (titles.has(t.title.toLowerCase())) { // título repetido: ganha sufixo
@@ -669,8 +865,15 @@
       }
       titles.add(t.title.toLowerCase());
     });
-    exitShared(ownTasks.concat(fresh));
-    toast(fresh.length ? `${fresh.length} tarefa${fresh.length === 1 ? '' : 's'} adicionada${fresh.length === 1 ? '' : 's'} às suas` : 'Você já tinha todas essas tarefas');
+    if (target === currentFolder()) tasks = own.concat(fresh);
+    else target.tasks = own.concat(fresh);
+    persist();
+    if (target !== currentFolder()) switchFolder(target.id);
+    else { renderAll(); graph.warmup(); }
+    const n = fresh.length;
+    toast(created
+      ? `Pasta “${target.name}” criada com ${n} tarefa${n === 1 ? '' : 's'}`
+      : n ? `${n} tarefa${n === 1 ? '' : 's'} adicionada${n === 1 ? '' : 's'} a “${target.name}”` : `“${target.name}” já tinha todas essas tarefas`);
   });
 
   async function openFromHash() {
@@ -1301,6 +1504,7 @@
 
   /* ===================== Inicialização ===================== */
   function renderAll() {
+    renderFolderUI();
     renderList();
     graph.rebuild();
   }

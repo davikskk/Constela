@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=11">
   <script>
     // Aplica o tema salvo antes da primeira pintura (evita "piscar" de tema).
     (function () {
@@ -97,7 +97,7 @@
     <svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>
     <span class="shared-text" id="shared-text">Visualizando tarefas compartilhadas</span>
     <div class="shared-actions">
-      <button type="button" class="btn primary" id="shared-save">Salvar nas minhas</button>
+      <button type="button" class="btn primary" id="shared-save">Salvar como pasta</button>
       <button type="button" class="btn ghost" id="shared-exit">Sair</button>
     </div>
   </div>
@@ -105,6 +105,21 @@
   <main class="layout" data-view="list">
     <!-- ============ Lista de tarefas ============ -->
     <section class="panel tasks-panel" aria-label="Tarefas">
+      <!-- Seletor de pastas -->
+      <div class="folder-bar popover-wrap">
+        <button type="button" class="folder-switch" data-popover="folder-pop" aria-expanded="false" title="Trocar de pasta">
+          <span id="folder-current" class="folder-current"></span>
+          <svg class="chev" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg>
+        </button>
+        <div class="popover folder-pop" id="folder-pop" role="menu" hidden>
+          <div class="popover-title">Pastas</div>
+          <div id="folder-list" class="folder-list"></div>
+          <div class="popover-sep"></div>
+          <button type="button" id="new-folder-btn">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Nova pasta
+          </button>
+        </div>
+      </div>
       <div class="list-toolbar">
         <div class="segmented" aria-label="Filtro">
           <button type="button" data-filter="all" class="active">Todas</button>
@@ -125,6 +140,7 @@
     <section class="panel graph-panel" aria-label="Visualização de grafo">
       <div class="graph-stage" id="graph-stage">
         <canvas id="graph"></canvas>
+        <div class="graph-folder" id="graph-folder" aria-hidden="true"></div>
         <!-- Card lateral de exibição (minimizável) -->
         <aside class="graph-settings minimized" id="graph-settings">
           <button type="button" class="gs-head" id="gs-toggle" aria-expanded="false" aria-controls="gs-content" title="Mostrar/minimizar opções de exibição">
@@ -186,6 +202,10 @@
             <input type="range" id="f-urg" class="urg-range" min="0" max="1" step="0.05" value="0.5">
           </label>
         </div>
+        <label class="field" id="folder-field">
+          <span class="field-label">Pasta</span>
+          <select id="f-folder" class="input"></select>
+        </label>
         <div class="field" id="links-field">
           <span class="field-label">Conexões <small>opcional</small></span>
           <div class="links-picker">
@@ -268,8 +288,42 @@
     </form>
   </dialog>
 
+  <!-- ============ Modal: criar / editar pasta ============ -->
+  <dialog id="folder-modal" class="modal modal-sm" aria-labelledby="folder-title">
+    <form class="modal-inner" id="folder-form" autocomplete="off">
+      <div class="modal-head">
+        <h2 id="folder-title">Nova pasta</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Fechar">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label">Nome</span>
+          <input id="fo-name" class="input" required maxlength="40" placeholder="Ex.: Trabalhos em grupo">
+        </label>
+        <div class="suggest" id="fo-suggest">
+          <button type="button" data-suggest="Trabalhos pessoais">Trabalhos pessoais</button>
+          <button type="button" data-suggest="Trabalhos em grupo">Trabalhos em grupo</button>
+          <button type="button" data-suggest="Estudos">Estudos</button>
+          <button type="button" data-suggest="Casa">Casa</button>
+        </div>
+        <div class="field">
+          <span class="field-label">Cor</span>
+          <div class="color-pick" id="fo-colors" role="radiogroup" aria-label="Cor da pasta"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn ghost danger-text" id="fo-delete" hidden>Excluir pasta</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn ghost" data-close>Cancelar</button>
+        <button type="submit" class="btn primary" id="fo-submit">Criar pasta</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=11"></script>
 </body>
 </html>
